@@ -70,11 +70,12 @@ impl CognitionActor {
 
     fn is_question(input: &str) -> bool {
         let trimmed = input.trim().to_lowercase();
-        if trimmed.ends_with('?') {
+        if trimmed.ends_with('?') || trimmed.starts_with('¿') {
             return true;
         }
+        
         let question_words = [
-            "¿", "qué", "que ", "como ", "cómo ", "cuál ", "cual ",
+            "qué ", "que ", "cómo ", "como ", "cuál ", "cual ",
             "quién", "quien ", "dónde", "donde ", "cuándo", "cuando ",
             "por qué", "por que", "háblame", "explícame", "cuéntame",
         ];
@@ -83,6 +84,18 @@ impl CognitionActor {
                 return true;
             }
         }
+        
+        let query_verbs = [
+            "sabes ", "recuerdas ", "conoces ", "puedes ", "me puedes ",
+            "tienes ", "hay ", "existe ", "podrías ", "dime ",
+            "sabías ", "qué sabes", "que sabes",
+        ];
+        for v in &query_verbs {
+            if trimmed.starts_with(v) {
+                return true;
+            }
+        }
+        
         false
     }
 
@@ -154,20 +167,27 @@ impl CognitionActor {
         out
     }
 
-    // Motor de inferencia parametrizado. Reutilizado por todas las fases del pipeline CoT.
     fn run_inference(
         backend: &LlamaBackend,
         model: &LlamaModel,
-        prompt: &str,
+        prompt_raw: &str,
         temperature: f32,
         max_tokens: usize,
     ) -> Result<String, String> {
+        // Traducción de ChatML a formato Llama 3 (Universal adapter)
+        let prompt = prompt_raw
+            .replace("<|im_start|>system\n", "<|start_header_id|>system<|end_header_id|>\n\n")
+            .replace("<|im_start|>user\n", "<|start_header_id|>user<|end_header_id|>\n\n")
+            .replace("<|im_start|>assistant\n", "<|start_header_id|>assistant<|end_header_id|>\n\n")
+            .replace("<|im_start|>tool\n", "<|start_header_id|>tool<|end_header_id|>\n\n")
+            .replace("<|im_end|>\n", "<|eot_id|>\n");
+
         let ctx_params = LlamaContextParams::default()
             .with_n_ctx(std::num::NonZeroU32::new(2048));
         let mut ctx = model.new_context(backend, ctx_params)
             .map_err(|e| format!("Error creando contexto: {}", e))?;
 
-        let tokens = model.str_to_token(prompt, AddBos::Always)
+        let tokens = model.str_to_token(&prompt, AddBos::Always)
             .map_err(|e| format!("Error en tokenización: {}", e))?;
 
         let mut batch = LlamaBatch::new(tokens.len(), 1);
@@ -201,7 +221,9 @@ impl CognitionActor {
             let piece = String::from_utf8_lossy(&token_bytes);
             
             // Romper si el modelo intenta generar tokens de control de chat o templates
-            if piece.contains("<|im_end|>") || piece.contains("<|im_start|>") || piece.contains("<|endoftext|>") || piece.contains("</s>") {
+            if piece.contains("<|im_end|>") || piece.contains("<|im_start|>") || 
+               piece.contains("<|endoftext|>") || piece.contains("</s>") ||
+               piece.contains("<|eot_id|>") || piece.contains("<|eom_id|>") {
                 break;
             }
 
