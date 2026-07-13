@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let cognition = CognitionActor::new(rx_cognition, tx_memory.clone(), tx_perception.clone(), &model_path);
     let memory = MemoryActor::new(rx_memory);
-    let heartbeat = HeartbeatActor::new(tx_memory.clone(), tx_perception.clone(), Duration::from_secs(3));
+    let heartbeat = HeartbeatActor::new(tx_memory.clone(), tx_cognition.clone(), Duration::from_secs(3));
 
     tokio::spawn(async move { perception.run().await; });
     tokio::spawn(async move { cognition.run().await; });

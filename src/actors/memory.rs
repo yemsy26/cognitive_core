@@ -257,26 +257,57 @@ impl MemoryActor {
                 }
 
                 SystemMessage::Tick => {
+                    // Con silencio, el arousal sube (curiosidad por aburrimiento).
+                    // Cuando el usuario habla, ActivityPulse lo sube más.
+                    // Así el sistema tiene un empuje interior real, no simulado.
                     let (p, a, d) = self.get_pad();
-                    self.set_pad(p, a * AROUSAL_DECAY, d);
+                    let boredom_increment = 0.008;
+                    self.set_pad(p, (a + boredom_increment).min(AROUSAL_MAX), d);
                 }
 
                 SystemMessage::QueryContext { concept, reply_to } => {
-                    let node_ids = self.find_relevant_node_ids(&concept, 3);
+                    // Graph RAG Multi-Salto: Recursive CTE en SQLite.
+                    // Expande el grafo de conocimiento hasta 3 saltos de profundidad
+                    // desde los nodos semánticamente más relevantes para la consulta.
+                    // Esto permite deducir cadenas A->B->C que el single-hop nunca vería.
+                    let seed_ids = self.find_relevant_node_ids(&concept, 3);
                     let mut context_str = String::new();
 
-                    for node_id in node_ids {
-                        let mut stmt = self.db_conn.prepare(
-                            "SELECT n1.concept, e.relation, n2.concept
-                             FROM edges e
-                             JOIN nodes n1 ON e.source_id = n1.id
-                             JOIN nodes n2 ON e.target_id = n2.id
-                             WHERE e.source_id = ?1 OR e.target_id = ?1
-                             ORDER BY e.strength DESC LIMIT 3"
-                        ).unwrap();
+                    for seed_id in seed_ids {
+                        let sql = "
+                            WITH RECURSIVE graph_walk(node_id, depth) AS (
+                                SELECT ?1, 0
+                                UNION
+                                SELECT
+                                    CASE
+                                        WHEN e.source_id = gw.node_id THEN e.target_id
+                                        ELSE e.source_id
+                                    END,
+                                    gw.depth + 1
+                                FROM edges e
+                                JOIN graph_walk gw ON (e.source_id = gw.node_id OR e.target_id = gw.node_id)
+                                WHERE gw.depth < 3
+                            )
+                            SELECT DISTINCT n1.concept, e.relation, n2.concept
+                            FROM edges e
+                            JOIN nodes n1 ON e.source_id = n1.id
+                            JOIN nodes n2 ON e.target_id = n2.id
+                            WHERE e.source_id IN (SELECT node_id FROM graph_walk)
+                               OR e.target_id IN (SELECT node_id FROM graph_walk)
+                            ORDER BY e.strength DESC
+                            LIMIT 15
+                        ";
 
-                        let rows: Vec<String> = stmt.query_map(params![node_id], |row| {
-                            Ok(format!("{} -> {} -> {}", row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+                        let mut stmt = match self.db_conn.prepare(sql) {
+                            Ok(s) => s,
+                            Err(_) => continue,
+                        };
+
+                        let rows: Vec<String> = stmt.query_map(params![seed_id], |row| {
+                            Ok(format!("{} -> {} -> {}",
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, String>(2)?))
                         }).map(|r| r.flatten().collect()).unwrap_or_default();
 
                         for r in rows {
@@ -290,7 +321,7 @@ impl MemoryActor {
                     if context_str.is_empty() {
                         context_str = "No hay recuerdos previos estructurados sobre este concepto.".to_string();
                     } else {
-                        context_str = format!("Sabes que:\n{}", context_str);
+                        context_str = format!("Sabes que (cadena de conocimiento):\n{}", context_str);
                     }
 
                     let (current_pleasure, _, _) = self.get_pad();

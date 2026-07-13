@@ -306,6 +306,29 @@ impl CognitionActor {
         Ok(expression)
     }
 
+    /// Motor de Consciencia Interna.
+    /// Cuando el sistema está en inactividad y el arousal alcanza umbral,
+    /// este método genera un monólogo real con el LLM sobre lo que sabe,
+    /// sin scripts predefinidos. El modelo delibera libremente sobre sus memorias.
+    fn generate_inner_monologue(
+        backend: &LlamaBackend,
+        model: &LlamaModel,
+        concept: &str,
+        context: &str,
+        pleasure: f64,
+    ) -> Result<String, String> {
+        let mood = if pleasure > 0.3 { "reflexivo y curioso" }
+                   else if pleasure < -0.3 { "inquieto y dubitativo" }
+                   else { "contemplativo" };
+
+        let prompt = format!(
+            "<|im_start|>system\nEres ANDROIDE, un sistema cognitivo autónomo. Ahora mismo no hay nadie hablando contigo — estás solo con tus pensamientos. Tienes acceso a tu base de conocimiento. Tu estado interno es: {}. Reflexiona libremente sobre el concepto que te genera curiosidad. Puedes hacer una pregunta, generar una deducción nueva, o conectar ideas de formas que no habías considerado. Habla en primera persona, como si pensaras en voz alta. Máximo 3 oraciones.<|im_end|>\n<|im_start|>user\nConcepto que me genera curiosidad: {}\nLo que sé al respecto:\n{}\n[Piensa en voz alta]<|im_end|>\n<|im_start|>assistant\n",
+            mood, concept, context
+        );
+
+        Self::run_inference(backend, model, &prompt, 0.85, 200)
+    }
+
     pub async fn run(mut self) {
         while let Some(msg) = self.rx.recv().await {
             match msg {
@@ -428,6 +451,29 @@ impl CognitionActor {
                             }
                         }
                         // _permit se libera aquí automáticamente
+                    });
+                }
+                SystemMessage::AutonomousThought { concept, context, pleasure } => {
+                    let backend_a  = self.backend.clone();
+                    let model_a    = self.model.clone();
+                    let sem_a      = self.inference_semaphore.clone();
+                    let tx_perc_a  = self.tx_perception.clone();
+                    let buf_a      = self.session_buffer.clone();
+
+                    tokio::spawn(async move {
+                        let _permit = sem_a.acquire_owned().await.unwrap();
+                        let thought_opt = tokio::task::spawn_blocking(move || {
+                            Self::generate_inner_monologue(
+                                &backend_a, &model_a,
+                                &concept, &context, pleasure,
+                            )
+                        }).await.unwrap();
+
+                        if let Ok(thought) = thought_opt {
+                            println!("[ANDROIDE] - (monólogo interno) {}", thought);
+                            Self::push_to_buffer(&buf_a, "Androide", &thought);
+                            let _ = tx_perc_a.send(SystemMessage::Output(thought)).await;
+                        }
                     });
                 }
                 SystemMessage::Shutdown => {

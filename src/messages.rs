@@ -23,6 +23,13 @@ pub enum SystemMessage {
     QueryGaps {
         reply_to: oneshot::Sender<(Vec<String>, f64)>,
     },
+    /// Dispara el Motor de Consciencia Interna. El concepto es el núcleo de
+    /// pensamiento sobre el cual el sistema generará un monólogo real con el LLM.
+    AutonomousThought {
+        concept: String,
+        context: String,
+        pleasure: f64,
+    },
     Output(String),
     Shutdown,
 }
