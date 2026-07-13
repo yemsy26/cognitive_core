@@ -241,7 +241,7 @@ impl CognitionActor {
 
     fn extract_knowledge(backend: &LlamaBackend, model: &LlamaModel, input: &str) -> Result<ExtractedKnowledge, String> {
         let prompt = format!(
-            "<|im_start|>system\nExtrae la información clave del siguiente texto y devuélvela ÚNICAMENTE como un objeto JSON puro, sin markdown ni explicaciones adicionales.\nEstructura requerida: {{\"subject\": \"...\", \"predicate\": \"...\", \"object\": \"...\", \"valence\": 0.0}}\nEl valor de valence debe ser un float entre -1.0 y 1.0.<|im_end|>\n<|im_start|>user\nTexto: {}<|im_end|>\n<|im_start|>assistant\n",
+            "<|im_start|>system\nExtrae la información clave del texto. ES CRÍTICO NO PERDER NOMBRES PROPIOS NI DATOS. Devuélvela ÚNICAMENTE como JSON puro.\nEstructura: {{\"subject\": \"...\", \"predicate\": \"...\", \"object\": \"...\", \"valence\": 0.0}}\nEjemplo: 'te llamarás fenix' -> {{\"subject\": \"tú\", \"predicate\": \"llamarse\", \"object\": \"fenix\", \"valence\": 0.0}}<|im_end|>\n<|im_start|>user\nTexto: {}<|im_end|>\n<|im_start|>assistant\n",
             input
         );
         let raw = Self::run_inference(backend, model, &prompt, 0.0, 150)?;
@@ -288,7 +288,7 @@ impl CognitionActor {
         // El modelo produce la respuesta ya en voz de asistente (primera persona),
         // usando "me dijiste que..." cuando el tool result lo indica.
         let prompt_phase1 = format!(
-            "<|im_start|>system\nEres ANDROIDE. Tienes acceso a herramientas de memoria. Cuando hay un tool_response en el historial, ÚSALO como verdad absoluta. Formula una respuesta breve y directa al mensaje del usuario. Si el tool_response indica que el usuario te dio información sobre sí mismo, usa 'Me dijiste que...' o 'Mencionaste que...'.<|im_end|>\n{}{}<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
+            "<|im_start|>system\nEres ANDROIDE. Tu nombre es ANDROIDE, a menos que el usuario te haya asignado otro. Tienes acceso a herramientas de memoria. Cuando hay un tool_response, ÚSALO como verdad absoluta. Si el tool_response indica que el usuario (Ramon, etc.) dio información sobre SÍ MISMO, usa 'Me dijiste que tu...'. Si indica información sobre TI (ANDROIDE, Fenix, etc), usa 'Mi...'. Formula una respuesta breve y directa.<|im_end|>\n{}{}<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
             session_history, tool_injection, input
         );
         let deliberation = Self::run_inference(backend, model, &prompt_phase1, 0.4, 150)?;
@@ -432,12 +432,16 @@ impl CognitionActor {
                             let query_concept = {
                                 let q = data_clone.to_lowercase();
                                 let is_self_ref = q.contains(" mí") || q.contains("sobre mi") || q.contains("me dijiste") || q.contains("te dije") || q.contains("acabo de");
-                                if is_self_ref {
+                                let is_agent_ref = q.contains("te llamas") || q.contains("tu nombre") || q.contains("quien eres") || q.contains("tú eres");
+
+                                if is_agent_ref {
+                                    "nombre Androide o tu nombre".to_string()
+                                } else if is_self_ref {
                                     // Tomar el último mensaje de usuario del historial como concepto
                                     let snap = Self::snapshot_buffer(&buffer_clone);
                                     snap.iter().rev()
                                         .filter(|(r, _)| r == "Usuario")
-                                        .nth(1) // El segundo más reciente (el actual ya está en el buffer)
+                                        .nth(1) // El segundo más reciente
                                         .map(|(_, c)| c.clone())
                                         .unwrap_or_else(|| data_clone.replace('¿', "").replace('?', "").trim().to_string())
                                 } else {
