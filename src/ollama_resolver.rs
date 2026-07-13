@@ -10,7 +10,7 @@ pub fn resolve_best_model(base_path: &str) -> Result<String, String> {
         return Err(format!("El directorio de manifiestos no existe: {}", manifests_dir.display()));
     }
 
-    let mut potential_models: Vec<PathBuf> = Vec::new();
+    let mut potential_models: Vec<(i32, PathBuf)> = Vec::new();
 
     // Explorar directorio local de manifiestos
     if let Ok(entries) = fs::read_dir(&manifests_dir) {
@@ -19,19 +19,23 @@ pub fn resolve_best_model(base_path: &str) -> Result<String, String> {
             
             // Priorización por familias de modelos eficientes para extracción semántica
             let lower_name = model_name.to_lowercase();
-            let is_priority = lower_name.contains("qwen")
-                || lower_name.contains("phi")
-                || lower_name.contains("llama")
-                || lower_name.contains("mistral");
+            
+            // Score-based priority: higher score means checked first
+            let mut priority_score = 0;
+            if lower_name.contains("llama3.1") {
+                priority_score = 100; // Prefer Llama 3.1
+            } else if lower_name.contains("llama") {
+                priority_score = 80;
+            } else if lower_name.contains("qwen") {
+                priority_score = 50;
+            } else if lower_name.contains("phi") || lower_name.contains("mistral") {
+                priority_score = 30;
+            }
 
             if let Ok(tags) = fs::read_dir(entry.path()) {
                 for tag_entry in tags.flatten() {
                     if tag_entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                        if is_priority {
-                            potential_models.insert(0, tag_entry.path());
-                        } else {
-                            potential_models.push(tag_entry.path());
-                        }
+                        potential_models.push((priority_score, tag_entry.path()));
                     }
                 }
             }
@@ -42,7 +46,11 @@ pub fn resolve_best_model(base_path: &str) -> Result<String, String> {
         return Err("No se encontraron manifiestos de modelos locales.".to_string());
     }
 
-    for manifest_path in potential_models {
+    // Sort by priority score (descending)
+    potential_models.sort_by(|a, b| b.0.cmp(&a.0));
+    let sorted_models: Vec<PathBuf> = potential_models.into_iter().map(|(_, p)| p).collect();
+
+    for manifest_path in sorted_models {
         if let Ok(content) = fs::read_to_string(&manifest_path) {
             if let Ok(json) = serde_json::from_str::<Value>(&content) {
                 if let Some(layers) = json.get("layers").and_then(|l| l.as_array()) {
